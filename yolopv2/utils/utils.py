@@ -566,10 +566,13 @@ def get_lane_center_2(lane_points, bottom_fraction=0.5, save_path="lane_center.y
     avg_x = np.mean(closest_points[:, 1])  # Average X-coordinate of closest points
     avg_y = np.max(closest_points[:, 0])  # Bottom-most Y (closest to car)
 
+    avg_x = int(avg_x)
+    avg_y = int(avg_y)
+
     lane_center = {"lane_center": {"x": avg_x, "y": avg_y}}
 
     # Save to YAML file
     with open(save_path, "w") as file:
-        yaml.dump(lane_center, file, default_flow_style=False)
+        yaml.dump(lane_center, file, default_flow_style=True)
 
     return int(avg_x), int(avg_y)
