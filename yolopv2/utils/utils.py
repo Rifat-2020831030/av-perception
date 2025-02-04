@@ -289,7 +289,7 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
 
     # Settings
     min_wh, max_wh = 2, 4096  # (pixels) minimum and maximum box width and height
-    max_det = 300  # maximum number of detections per image
+    max_det = 100  # maximum number of detections per image
     max_nms = 30000  # maximum number of boxes into torchvision.ops.nms()
     time_limit = 10.0  # seconds to quit after
     redundant = True  # require redundant detections
@@ -391,7 +391,7 @@ def box_iou(box1, box2):
     return inter / (area1[:, None] + area2 - inter)  # iou = inter / (area1 + area2 - inter)
 
 class LoadImages:  # for inference
-    def __init__(self, path, img_size=640, stride=32):
+    def __init__(self, path, img_size=640, stride=32, desired_fps=20):
         p = str(Path(path).absolute())  # os-agnostic absolute path
         if '*' in p:
             files = sorted(glob.glob(p, recursive=True))  # glob
@@ -414,6 +414,9 @@ class LoadImages:  # for inference
         self.nf = ni + nv  # number of files
         self.video_flag = [False] * ni + [True] * nv
         self.mode = 'image'
+        self.frame_interval = 1  # No skipping by default
+        self.desired_fps = desired_fps  # New attribute
+
         if any(videos):
             self.new_video(videos[0])  # new video
         else:
@@ -431,9 +434,11 @@ class LoadImages:  # for inference
         path = self.files[self.count]
 
         if self.video_flag[self.count]:
-            # Read video
             self.mode = 'video'
             ret_val, img0 = self.cap.read()
+            while ret_val and (self.frame % self.frame_interval != 0):
+                ret_val, img0 = self.cap.read()
+                self.frame += 1
             if not ret_val:
                 self.count += 1
                 self.cap.release()
@@ -443,19 +448,19 @@ class LoadImages:  # for inference
                     path = self.files[self.count]
                     self.new_video(path)
                     ret_val, img0 = self.cap.read()
-
-            self.frame += 1
-            print(f'video {self.count + 1}/{self.nf} ({self.frame}/{self.nframes}) {path}: ', end='')
+            else:
+                self.frame += 1
+                print(f'Processing video {self.count + 1}/{self.nf} (Frame {self.frame}/{self.nframes}) {path}: ', end='')
 
         else:
             # Read image
             self.count += 1
             img0 = cv2.imread(path)  # BGR
             assert img0 is not None, 'Image Not Found ' + path
-            #print(f'image {self.count}/{self.nf} {path}: ', end='')
+            # print(f'image {self.count}/{self.nf} {path}: ', end='')
 
         # Padded resize
-        img0 = cv2.resize(img0, (1280,720), interpolation=cv2.INTER_LINEAR)
+        img0 = cv2.resize(img0, (1280, 720), interpolation=cv2.INTER_LINEAR)
         img = letterbox(img0, self.img_size, stride=self.stride)[0]
 
         # Convert
@@ -466,8 +471,14 @@ class LoadImages:  # for inference
 
     def new_video(self, path):
         self.frame = 0
-        self.cap = cv2.VideoCapture(path) # what it does is to open the video file and return a VideoCapture object
-        self.nframes = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)) # get the total number of frames in the video
+        self.cap = cv2.VideoCapture(path)
+        self.nframes = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))  # total frames
+        self.original_fps = self.cap.get(cv2.CAP_PROP_FPS)
+        if self.original_fps > 0 and self.desired_fps > 0:
+            self.frame_interval = max(int(round(self.original_fps / self.desired_fps)), 1)
+            # print(f'Original FPS: {self.original_fps}, Desired FPS: {self.desired_fps}, Frame Interval: {self.frame_interval}')
+        else:
+            self.frame_interval = 1  # Process all frames if FPS info is unavailable
 
     def __len__(self):
         return self.nf  # number of files
@@ -548,7 +559,7 @@ def draw_lane(img, lane_center):
     
     return img
 
-def get_lane_center_2(lane_points, bottom_fraction=0.5, save_path="lane_center.yaml"):
+def get_lane_center_2(lane_points, bottom_fraction=0.5, save_path="lane_center.yaml", frame = 2):
     if len(lane_points) == 0:
         return None  # No lane detected
 
@@ -571,8 +582,11 @@ def get_lane_center_2(lane_points, bottom_fraction=0.5, save_path="lane_center.y
 
     lane_center = {"lane_center": {"x": avg_x, "y": avg_y}}
 
-    # Save to YAML file
-    with open(save_path, "w") as file:
+    # append to YAML file
+    with open(save_path, "a") as file:
         yaml.dump(lane_center, file, default_flow_style=True)
+
+    # with open(save_path, "w") as file:
+    #     yaml.dump(lane_center, file, default_flow_style=True)
 
     return int(avg_x), int(avg_y)

@@ -31,11 +31,12 @@ def make_parser():
     parser.add_argument('--project', default='runs/detect', help='save results to project/name')
     parser.add_argument('--name', default='exp', help='save results to project/name')
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
+    parser.add_argument('--desired-fps', type=int, default=15, help='Desired FPS for processing video')
     return parser
 
 def detect():
     # setting and directories
-    source, weights,  save_txt, imgsz = opt.source, opt.weights,  opt.save_txt, opt.img_size
+    source, weights, save_txt, imgsz, desired_fps = opt.source, opt.weights, opt.save_txt, opt.img_size, opt.desired_fps
     save_img = not opt.nosave and not source.endswith('.txt')  # save inference images
 
     save_dir = Path(increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok))  # increment run
@@ -46,25 +47,33 @@ def detect():
     nms_time = AverageMeter()
 
     # Load model
-    stride =32
-    model  = torch.jit.load(weights, map_location='cpu')
+    stride = 32
+    model = torch.jit.load(weights, map_location='cpu')
     device = select_device('cpu')
     half = device.type != 'cpu'  # half precision only supported on CUDA
     model = model.to(device)
 
     if half:
-        model.half()  # to FP16  
+        model.half()  # to FP16
     model.eval()
 
     # Set Dataloader
     vid_path, vid_writer = None, None
-    dataset = LoadImages(source, img_size=imgsz, stride=stride)
+    dataset = LoadImages(source, img_size=imgsz, stride=stride, desired_fps=desired_fps)  # Pass desired_fps
+
+    # Initialize frame counters
+    total_frames = 0
+    processed_frames = 0
 
     # Run inference
     if device.type != 'cpu':
         model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
     t0 = time.time()
+
     for path, img, im0s, vid_cap in dataset:
+        total_frames += 1
+        processed_frames += 1
+
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
@@ -74,13 +83,12 @@ def detect():
 
         # Inference
         t1 = time_synchronized()
-        [pred,anchor_grid],seg,ll= model(img)
+        [pred, anchor_grid], seg, ll = model(img)
         t2 = time_synchronized()
 
-        # waste time: the incompatibility of  torch.jit.trace causes extra time consumption in demo version 
-        # but this problem will not appear in offical version 
+        # waste time: the incompatibility of  torch.jit.trace causes extra time consumption
         tw1 = time_synchronized()
-        pred = split_for_trace_model(pred,anchor_grid)
+        pred = split_for_trace_model(pred, anchor_grid)
         tw2 = time_synchronized()
 
         # Apply NMS
@@ -97,13 +105,14 @@ def detect():
         #code started
         lane_points = get_lane_points(ll_seg_mask)
         # lane_center = get_lane_center(lane_points)
-        lane_center = get_lane_center_2(lane_points)
+        frame = getattr(dataset, 'frame', 0)
+        lane_center = get_lane_center_2(lane_points, save_path=str(save_dir / "lane_center.yaml"), frame=frame)
         # print("Center point: ",lane_center)
         #code ended
 
         # Process detections
         for i, det in enumerate(pred):  # detections per image
-          
+
             p, s, im0, frame = path, '', im0s, getattr(dataset, 'frame', 0)
 
             p = Path(p)  # to Path
@@ -134,7 +143,7 @@ def detect():
 
             # Print time (inference)
             print(f'{s}Done. ({t2 - t1:.3f}s)')
-            show_seg_result(im0, (da_seg_mask,ll_seg_mask), is_demo=True)
+            show_seg_result(im0, (da_seg_mask, ll_seg_mask), is_demo=True)
             #code started
             draw_lane(im0, lane_center)
 
@@ -149,22 +158,20 @@ def detect():
                         if isinstance(vid_writer, cv2.VideoWriter):
                             vid_writer.release()  # release previous video writer
                         if vid_cap:  # video
-                            fps = vid_cap.get(cv2.CAP_PROP_FPS)
-                            #w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                            #h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                            w,h = im0.shape[1], im0.shape[0]
+                            fps = opt.desired_fps  # Use desired_fps instead of original
+                            w, h = im0.shape[1], im0.shape[0]
                         else:  # stream
                             fps, w, h = 30, im0.shape[1], im0.shape[0]
                             save_path += '.mp4'
                         vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
                     vid_writer.write(im0)
 
-    inf_time.update(t2-t1,img.size(0))
-    nms_time.update(t4-t3,img.size(0))
-    waste_time.update(tw2-tw1,img.size(0))
-    print('inf : (%.4fs/frame)   nms : (%.4fs/frame)' % (inf_time.avg,nms_time.avg))
-    print(f'Done. ({time.time() - t0:.3f}s)')
-
+        inf_time.update(t2 - t1, img.size(0))
+        nms_time.update(t4 - t3, img.size(0))
+        waste_time.update(tw2 - tw1, img.size(0))
+        print(f'Total Frames: {total_frames}, Processed Frames: {processed_frames}')
+        print('inf : (%.4fs/frame)   nms : (%.4fs/frame)' % (inf_time.avg, nms_time.avg))
+        print(f'Done. ({time.time() - t0:.3f}s)')
 
 if __name__ == '__main__':
     opt =  make_parser().parse_args()
